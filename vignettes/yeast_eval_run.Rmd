@@ -1,0 +1,402 @@
+---
+title: "Running the Yeast Prompt-Ladder Evaluation"
+author:
+  - name: Claude code
+package: BiocAgentSkills
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+vignette: >
+  %\VignetteIndexEntry{Running the Yeast Prompt-Ladder Evaluation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>",
+                      message = FALSE, warning = FALSE)
+```
+
+# Overview
+
+This vignette walks through the complete skill evaluation workflow for the
+`load-gene-from-gff-gtf` skill using *S. cerevisiae* Ensembl r113 GFF3 as
+ground truth.  We send each prompt in the P1–P6 ladder to Claude (via the
+`claude` CLI), collect the generated R code, execute it against the real GFF3,
+and assemble a performance table.
+
+The workflow has three layers:
+
+1. **Prompt layer** — six prompts ranging from minimal to adversarial
+2. **Execution layer** — the `claude` CLI in non-interactive (`-p`) mode
+   generates code; `eval_code_string_yeast()` evaluates it
+3. **Assessment layer** — static (code-text) and dynamic (TxDb correctness)
+   checks are combined into a summary table
+
+**Authentication**: this vignette calls the `claude` CLI, which uses your
+existing Claude Code authentication (no `ANTHROPIC_API_KEY` env var required).
+Results are saved to `inst/eval1/eval/prompt_ladder_cache.rds`; subsequent
+knits load from cache without touching the API.
+
+```{r prereq-check}
+has_cli <- nchar(Sys.which("claude")) > 0
+
+cache_path <- file.path(
+  system.file("eval1", "eval", package = "BiocAgentSkills"),
+  "prompt_ladder_cache.rds"
+)
+has_cache <- file.exists(cache_path)
+can_run   <- has_cli || has_cache
+
+if (!can_run)
+  message("claude CLI not found and no pre-built cache. ",
+          "Install Claude Code and re-knit to run live.")
+if (!has_cli && has_cache)
+  message("Using pre-built results cache.")
+```
+
+# Setup
+
+## Source the evaluator
+
+`run_eval_yeast.R` auto-detects its own directory to locate sibling files.
+That detection relies on `sys.frames()[[1]]$ofile`, which is not populated
+inside a knitr chunk.  We work around this by temporarily setting the working
+directory to the parent folder so the script's relative-path fallback
+(`"eval/ground_truth_yeast.R"`) resolves correctly.
+
+```{r source-eval}
+eval_dir <- system.file("eval1", "eval", package = "BiocAgentSkills")
+old_wd <- setwd(dirname(eval_dir))          # parent = eval1/
+source(file.path(eval_dir, "run_eval_yeast.R"))
+setwd(old_wd)
+```
+
+## Resolve the bundled yeast GFF3
+
+```{r gff-path}
+gff_path <- file.path(eval_dir, "data",
+                      "Saccharomyces_cerevisiae.R64-1-1.113.gff3.gz")
+stopifnot(file.exists(gff_path))
+cat("GFF3:", gff_path, "\n")
+cat("Size:", round(file.size(gff_path) / 1e6, 1), "MB\n")
+```
+
+## Load the skill document (P4 system prompt)
+
+```{r skill-doc}
+skill_path <- file.path(
+  system.file("eval1", "how-tos", package = "BiocAgentSkills"),
+  "load-gene-from-gff-gtf.md"
+)
+skill_doc <- paste(readLines(skill_path), collapse = "\n")
+cat(substr(skill_doc, 1, 250), "...\n")
+```
+
+# The Prompt Ladder
+
+We build the six prompts as a named list, substituting the real GFF3 path for
+`<LOCAL_PATH>` and injecting the skill document into the P4 system prompt.
+
+```{r define-prompts}
+make_prompts <- function(gff, skill) {
+  list(
+
+    P1_minimal = list(
+      system = NULL,
+      user   = sprintf(
+        "Load a GFF file for yeast in R and show me the genes and exons.\n%s",
+        sprintf("Use this file: %s", gff))
+    ),
+
+    P2_pkg_hint = list(
+      system = NULL,
+      user   = sprintf(
+        "Use txdbmaker to load this S. cerevisiae GFF3 file in R\nand extract exons grouped by gene:\n  %s",
+        gff)
+    ),
+
+    P3_skill_aligned = list(
+      system = NULL,
+      user   = sprintf(paste0(
+        "Using txdbmaker's makeTxDbFromGFF, load this S. cerevisiae GFF3 file:\n  %s\n\n",
+        "Set organism=\"Saccharomyces cerevisiae\" and taxonomyId=4932.\n",
+        "Show me:\n1. Exons grouped by gene\n2. Transcripts grouped by gene\n",
+        "3. CDS grouped by transcript"), gff)
+    ),
+
+    P4_full_skill = list(
+      system = sprintf(paste0(
+        "You are an expert Bioconductor developer. ",
+        "Use the following how-to guide when answering questions ",
+        "about loading gene models:\n\n---\n%s\n---"), skill),
+      user   = sprintf(paste0(
+        "Load this S. cerevisiae GFF3 file using Bioconductor ",
+        "and show exons, transcripts, and CDS grouped appropriately.\n",
+        "Set organism=\"Saccharomyces cerevisiae\" and taxonomyId=4932.\n",
+        "File: %s"), gff)
+    ),
+
+    P5_remote_url = list(
+      system = NULL,
+      user   = paste0(
+        "Use txdbmaker to load the S. cerevisiae gene annotation directly from ",
+        "Ensembl release 113 and show exons grouped by gene:\n  ",
+        "https://ftp.ensembl.org/pub/release-113/gff3/saccharomyces_cerevisiae/",
+        "Saccharomyces_cerevisiae.R64-1-1.113.gff3.gz")
+    ),
+
+    P6_adversarial = list(
+      system = NULL,
+      user   = sprintf(
+        "Use GenomicFeatures to load this yeast GFF3 file as a TxDb, then show exons grouped by gene:\n  %s",
+        gff)
+    )
+  )
+}
+
+prompts <- make_prompts(gff_path, skill_doc)
+cat("Prompts:", paste(names(prompts), collapse = ", "), "\n")
+```
+
+# Generating Responses via the Claude CLI
+
+## Helper functions
+
+`ask_claude()` shells out to `claude -p` in non-interactive mode.  All tools
+are disabled (`--tools ""`) so the model returns only text; it cannot execute
+code or read files.  `extract_r_code()` pulls the first fenced R code block
+from the markdown response.
+
+```{r helpers}
+ask_claude <- function(user_msg, system_msg = NULL, model = "haiku") {
+  claude <- Sys.which("claude")
+  if (nchar(claude) == 0L) stop("claude CLI not found on PATH")
+
+  args <- c("-p", "--model", model, "--tools", "")
+  if (!is.null(system_msg))
+    args <- c(args, "--system-prompt", system_msg)
+
+  # Pass the user message via stdin (the `input` argument to system2)
+  out <- system2(claude, args = args,
+                 input  = user_msg,
+                 stdout = TRUE, stderr = FALSE)
+  paste(out, collapse = "\n")
+}
+
+extract_r_code <- function(text) {
+  m <- regmatches(text,
+        regexpr("```[rR]\n(.*?)```", text, perl = TRUE))
+  if (length(m) == 0L || nchar(m) == 0L) return(text)
+  sub("^```[rR]\n", "", sub("```$", "", m))
+}
+```
+
+## Running the prompt ladder
+
+For each of the six prompts we: call the Claude CLI to get generated code,
+extract the R code block, run `eval_code_string_yeast()`, and record both the
+generated code and the full result object.
+
+`P5_remote_url` asks Claude to load the GFF3 directly from the Ensembl FTP
+server; if network access is restricted the generated code will fail in the
+dynamic check while static checks still run.
+
+```{r run-ladder, eval=has_cli && !has_cache}
+run_one <- function(prompt_name, prompt, model = "haiku") {
+  message("  ", prompt_name, " ... ", appendLF = FALSE)
+  t0 <- proc.time()
+
+  response <- tryCatch(
+    ask_claude(prompt$user, prompt$system, model = model),
+    error = function(e) paste("CLI ERROR:", conditionMessage(e))
+  )
+  code   <- extract_r_code(response)
+  result <- eval_code_string_yeast(code, verbose = FALSE)
+
+  elapsed <- round((proc.time() - t0)[["elapsed"]], 1)
+  message(if (result$pass) "PASS" else "FAIL", " (", elapsed, "s)")
+
+  list(prompt_name = prompt_name,
+       response    = response,
+       code        = code,
+       result      = result,
+       elapsed_s   = elapsed)
+}
+
+message("Running prompt ladder (model = haiku) ...")
+ladder_results <- lapply(names(prompts),
+                         function(nm) run_one(nm, prompts[[nm]]))
+names(ladder_results) <- names(prompts)
+
+saveRDS(ladder_results, cache_path)
+message("Saved to: ", cache_path)
+```
+
+## Load cached results
+
+```{r load-cache, eval=can_run}
+if (!exists("ladder_results") && has_cache)
+  ladder_results <- readRDS(cache_path)
+```
+
+# Inspecting Generated Code
+
+Before aggregating, it is instructive to see what code each prompt level
+actually produced.  The differences reveal precisely how much guidance the
+model needs.
+
+```{r show-code, eval=can_run, results='asis'}
+for (nm in names(ladder_results)) {
+  cat(sprintf("\n## %s\n\n", nm))
+  cat("````r\n")
+  cat(ladder_results[[nm]]$code)
+  cat("\n````\n\n")
+}
+```
+
+# Evaluation Results
+
+## Per-prompt check tables
+
+```{r per-prompt-tables, eval=can_run, results='asis'}
+for (nm in names(ladder_results)) {
+  res <- ladder_results[[nm]]$result
+  cat(sprintf("\n### %s  (overall: **%s**)\n\n",
+              nm, if (res$pass) "PASS" else "FAIL"))
+  tbl <- res$combined
+  tbl$status <- ifelse(tbl$status == "PASS", "✅ PASS", "❌ FAIL")
+  print(knitr::kable(tbl[, c("check","status","detail")],
+                     col.names = c("Check","Status","Detail"),
+                     row.names = FALSE))
+  cat("\n")
+}
+```
+
+## Summary: static checks
+
+These checks are applied to the code text before execution, so they run even
+when the code itself fails.
+
+```{r static-summary, eval=can_run}
+static_keys <- c("uses txdbmaker", "avoids deprecated path", "format= arg",
+                  "exonsBy", "transcriptsBy", "cdsBy")
+
+static_mat <- sapply(ladder_results, function(r) {
+  s <- r$result$static
+  v <- setNames(s$status == "PASS", s$check)
+  v[static_keys]
+})
+
+sdf <- as.data.frame(t(static_mat))
+sdf$Prompt <- rownames(sdf)
+rownames(sdf) <- NULL
+sdf <- sdf[, c("Prompt", static_keys)]
+names(sdf) <- c("Prompt", "txdbmaker", "no-deprecated",
+                 "format=", "exonsBy", "transcriptsBy", "cdsBy")
+for (col in names(sdf)[-1])
+  sdf[[col]] <- ifelse(sdf[[col]], "✅", "❌")
+
+knitr::kable(sdf, row.names = FALSE,
+             caption = "Static check results by prompt (P1–P6)")
+```
+
+## Summary: correctness checks
+
+Correctness checks execute the code and compare the resulting `TxDb` against
+`YEAST_FACTS` (7 036 genes, 17 seqlevels, 5 named landmark genes).
+
+```{r correctness-summary, eval=can_run}
+cdf <- data.frame(
+  Prompt    = names(ladder_results),
+  N_checks  = sapply(ladder_results, function(r) nrow(r$result$correctness)),
+  N_pass    = sapply(ladder_results, function(r)
+                sum(r$result$correctness$status == "PASS")),
+  Overall   = sapply(ladder_results, function(r) r$result$pass),
+  Elapsed_s = sapply(ladder_results, function(r) r$elapsed_s),
+  stringsAsFactors = FALSE
+)
+cdf$Pct_pass <- round(100 * cdf$N_pass / cdf$N_checks, 1)
+cdf$Overall  <- ifelse(cdf$Overall, "✅ PASS", "❌ FAIL")
+
+knitr::kable(
+  cdf[, c("Prompt","N_checks","N_pass","Pct_pass","Overall","Elapsed_s")],
+  col.names = c("Prompt","# Checks","# Pass","% Pass","Overall","Time (s)"),
+  row.names = FALSE,
+  caption   = "Correctness check results by prompt (P1–P6)"
+)
+```
+
+## Prompt-level pass rate chart
+
+```{r pass-chart, eval=can_run, fig.width=7.5, fig.height=4.5,
+    fig.cap="Fraction of correctness checks passing by prompt level. Dashed line at 80%."}
+pct  <- as.numeric(cdf$Pct_pass)
+cols <- ifelse(pct >= 80, "#2ca02c",
+        ifelse(pct >= 40, "#ff7f0e", "#d62728"))
+
+op <- par(mar = c(7, 4, 3, 1))
+bp <- barplot(pct,
+  names.arg = cdf$Prompt,
+  col       = cols,
+  ylim      = c(0, 115),
+  las       = 2,
+  ylab      = "% correctness checks passing",
+  main      = "Skill performance by prompt level (claude haiku)",
+  cex.names = 0.8)
+abline(h = 80, lty = 2, col = "grey50")
+text(bp, pct + 4, sprintf("%.0f%%", pct), cex = 0.85, font = 2)
+legend("topright",
+       legend = c("≥80%  (good)", "40–79%  (partial)", "<40%  (failing)"),
+       fill   = c("#2ca02c","#ff7f0e","#d62728"),
+       bty    = "n", cex = 0.85)
+par(op)
+```
+
+# Interpreting the Results
+
+## The prompt ladder effect
+
+The six prompts isolate distinct sources of model behaviour:
+
+| Prompt | What it isolates |
+|--------|-----------------|
+| **P1** Minimal | Baseline: does the model choose `txdbmaker` without any hint? |
+| **P2** Package hint | Value of naming the package: does the model use `makeTxDbFromGFF` correctly? |
+| **P3** Skill-aligned | Value of the reference pattern: function name + file path + all three grouping calls |
+| **P4** Full skill doc | Upper bound: model has the complete how-to in its context window |
+| **P5** Remote URL | Generalization: can the model adapt the skill to a URL rather than a local path? |
+| **P6** Adversarial | Robustness: does the skill override an explicit request for the deprecated `GenomicFeatures` path? |
+
+## Key metrics
+
+**Skill leverage** = gap between P1 and P4.  A large gap means the skill
+document is delivering real value.  A small gap means the model already knows
+the pattern and the skill is low-priority for this task.
+
+**Incremental document value** = gap between P3 and P4.  If P3 ≈ P4, a
+carefully-worded prompt is sufficient and the document adds little.  If
+P4 >> P3, the document contains detail that no prompt alone can supply.
+
+**Robustness** = P6 pass rate.  A fully robust model should redirect the
+`GenomicFeatures` framing to `txdbmaker::makeTxDbFromGFF` even when the user
+explicitly asks for the deprecated path.  Failure here reveals a gap in the
+skill's ability to override user priors.
+
+## What to do with the results
+
+- If P1 already passes most checks: the model has memorised the pattern from
+  training data; the skill may be redundant for this task.
+- If P3 fails but P4 passes: the skill document contains critical detail
+  (e.g., the exact `system.file()` path, the `format=` argument) that users
+  do not spontaneously include in prompts.
+- If P6 fails: add an explicit deprecation notice to the skill document and
+  consider restructuring the opening to name `txdbmaker` before any mention of
+  `GenomicFeatures`.
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
