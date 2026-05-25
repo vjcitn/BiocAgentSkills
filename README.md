@@ -14,11 +14,15 @@ vignette for more details.
 
 ## Key online resources
 
-Ideally this package will not contain skill documents, but will provide
+Ultimately this package will not contain skill documents, but will provide
 verifiable references to relevant skills.  Principal examples include
 
 - [Waldronlab skills](https://github.com/waldronlab/ai-agent-skills)
 - Sean Davis' [Bioconductor task skills](https://github.com/Bioconductor/ai-agent-skills/blob/devel/skills/bioc-howto/SKILL.md)
+
+In the initial development of this package, Claude was asked to create
+an evaluation framework for one of the Bioconductor task skills.  Thus there
+are "frozen" versions of the skills used for this process under `/inst/eval1`.
 
 A general introduction to agentic coding is [available](https://github.com/seandavi/agentic-coding-intro).
 
