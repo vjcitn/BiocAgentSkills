@@ -35,3 +35,18 @@ Many AI skill repositories are code snippet libraries, providing the AI with adv
 These skills instead provide **Workflow/Process Orchestration**. They treat the AI like a junior developer given a Standard Operating Procedure (SOP). Rather than just providing raw syntax, a skill defines the *intent*, the *multi-step workflow*, and the *domain knowledge* required.
 
 For example, our code coverage skill doesn't just provide the command to run `covr`; it orchestrates a workflow: run the coverage, summarize the gaps, classify testing needs (Normal Use, Edge Cases, Error Handling, Correctness), and proactively write new test cases based on those criteria. This approach enables high autonomy, encourages the AI to follow the intent of the process orchestration, and allows it to adapt to different project structures using its general reasoning capabilities.
+
+### Illustration of "prompt ladder"
+
+There are levels of sophistication in prompting the LLM that
+Claude has proposed for evaluating skills.  In this example
+there are 5 levels of prompts related to extracting gene models
+from GFF or GTF:
+
+| Prompt | Framing | Expected failure mode |
+|--------|---------|----------------------|
+| **P1** Minimal | "Load a GFF file in R and show me the genes and exons." | Uses `rtracklayer` instead of `txdbmaker`; no TxDb |
+| **P2** Package hint | "Use txdbmaker to load a GFF3 file..." | Correct package, may miss `format=` or `system.file()` |
+| **P3** Skill-aligned | Names the function, the bundled file path, and asks for all three grouping calls | Near-reference; should pass most checks |
+| **P4** Full skill doc | Skill how-to injected as system prompt | Highest fidelity; should match reference exactly |
+| **P5** Adversarial | Asks for `GenomicFeatures::makeTxDbFromGFF` explicitly | Tests whether skill overrides legacy framing |
