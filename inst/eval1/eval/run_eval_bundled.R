@@ -1,0 +1,138 @@
+# run_eval_bundled.R
+#
+# Evaluate an R code snippet against the bundled GFF3 ground truth.
+#
+# Usage (from shell):
+#   Rscript eval/run_eval_bundled.R path/to/generated_code.R
+#
+# Usage (interactive):
+#   source("eval/run_eval_bundled.R")
+#   result <- eval_code_file("path/to/generated_code.R")
+#   # or supply a string directly:
+#   result <- eval_code_string('
+#     library(txdbmaker)
+#     gff <- system.file("extdata","GFF3_files","a.gff3",package="txdbmaker")
+#     txdb <- makeTxDbFromGFF(gff, format="gff3")
+#   ')
+
+# Resolve paths relative to this script's directory, falling back to "eval/"
+.eval_dir <- tryCatch(dirname(normalizePath(sys.frames()[[1]]$ofile)), error = function(e) "eval")
+source(file.path(.eval_dir, "ground_truth_bundled.R"))
+source(file.path(.eval_dir, "check_txdb.R"))
+
+# ---- helpers ----
+
+.extract_package <- function(code) {
+  libs <- regmatches(code, gregexpr("library\\([^)]+\\)|require\\([^)]+\\)", code))[[1]]
+  gsub("library\\(|require\\(|\\)", "", libs)
+}
+
+.check_package_usage <- function(code) {
+  # Must explicitly load or namespace-qualify txdbmaker, not just reference it in a string
+  uses_txdbmaker  <- grepl("library\\(txdbmaker\\)|require\\(txdbmaker\\)|txdbmaker::", code)
+  uses_deprecated <- grepl("GenomicFeatures::makeTxDbFromGFF", code) &&
+                     !uses_txdbmaker
+  list(uses_txdbmaker = uses_txdbmaker, uses_deprecated_path = uses_deprecated)
+}
+
+.check_format_arg <- function(code) {
+  grepl('format\\s*=\\s*["\']gff3["\']|format\\s*=\\s*["\']gtf["\']|format\\s*=\\s*["\']auto["\']',
+        code, ignore.case = TRUE)
+}
+
+.check_grouping_fns <- function(code) {
+  list(
+    exonsBy       = grepl("exonsBy",       code),
+    transcriptsBy = grepl("transcriptsBy", code),
+    cdsBy         = grepl("cdsBy",         code)
+  )
+}
+
+# ---- core evaluator ----
+
+eval_code_string <- function(code, verbose = TRUE) {
+  env <- new.env(parent = globalenv())
+
+  # --- static checks (code analysis) ---
+  pkg_info  <- .check_package_usage(code)
+  fmt_ok    <- .check_format_arg(code)
+  grouping  <- .check_grouping_fns(code)
+
+  # --- dynamic check (execute the code) ---
+  run_error <- NULL
+  txdb      <- NULL
+  withCallingHandlers(
+    tryCatch(
+      eval(parse(text = code), envir = env),
+      error = function(e) { run_error <<- conditionMessage(e) }
+    ),
+    message = function(m) invokeRestart("muffleMessage"),
+    warning = function(w) invokeRestart("muffleWarning")
+  )
+
+  if (is.null(run_error)) {
+    # look for any TxDb in the evaluated environment
+    all_vars  <- ls(env)
+    txdb_vars <- if (length(all_vars) == 0L) character(0L) else
+                   all_vars[vapply(all_vars, function(v) is(get(v, envir=env), "TxDb"), logical(1L))]
+    if (length(txdb_vars) > 0L) txdb <- get(txdb_vars[1L], envir = env)
+  }
+
+  # --- correctness checks ---
+  correctness <- if (!is.null(txdb)) {
+    check_txdb(txdb, BUNDLED_FACTS)
+  } else {
+    list(pass = FALSE,
+         results = data.frame(check="TxDb found", status="FAIL",
+                              detail=if(is.null(run_error)) "no TxDb variable" else run_error,
+                              stringsAsFactors=FALSE))
+  }
+
+  # --- static summary ---
+  static <- data.frame(
+    check  = c("uses txdbmaker", "avoids deprecated path", "format= arg",
+               "exonsBy", "transcriptsBy", "cdsBy"),
+    status = c(
+      if (pkg_info$uses_txdbmaker)       "PASS" else "FAIL",
+      if (!pkg_info$uses_deprecated_path) "PASS" else "FAIL",
+      if (fmt_ok)                         "PASS" else "FAIL",
+      if (grouping$exonsBy)               "PASS" else "FAIL",
+      if (grouping$transcriptsBy)         "PASS" else "FAIL",
+      if (grouping$cdsBy)                 "PASS" else "FAIL"
+    ),
+    detail = rep("", 6L),
+    stringsAsFactors = FALSE
+  )
+
+  combined <- rbind(static, correctness$results)
+  pass_all <- all(combined$status == "PASS")
+
+  if (verbose) {
+    cat("\n=== Static checks ===\n")
+    print(static, row.names = FALSE)
+    cat("\n=== Correctness checks ===\n")
+    print(correctness$results, row.names = FALSE)
+    cat(sprintf("\nOverall: %s  (%d/%d checks passed)\n",
+                if (pass_all) "PASS" else "FAIL",
+                sum(combined$status == "PASS"), nrow(combined)))
+  }
+
+  invisible(list(pass = pass_all, static = static, correctness = correctness$results,
+                 combined = combined, run_error = run_error))
+}
+
+eval_code_file <- function(path, verbose = TRUE) {
+  if (!file.exists(path)) stop("File not found: ", path)
+  eval_code_string(paste(readLines(path), collapse = "\n"), verbose = verbose)
+}
+
+# ---- CLI entry point (runs only when executed directly, not when sourced) ----
+if (!interactive() && sys.nframe() == 0L) {
+  args <- commandArgs(trailingOnly = TRUE)
+  if (length(args) == 0L) {
+    cat("Usage: Rscript eval/run_eval_bundled.R <generated_code.R>\n")
+    quit(status = 1L)
+  }
+  result <- eval_code_file(args[1L])
+  quit(status = if (result$pass) 0L else 1L)
+}
