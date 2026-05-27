@@ -1,0 +1,10 @@
+pandoc: '2.13'
+pkgdown: 2.2.0
+pkgdown_sha: ~
+articles:
+  BiocAgentSkills: BiocAgentSkills.html
+  skill_evaluation: skill_evaluation.html
+last_built: 2026-05-27T07:06Z
+urls:
+  reference: https://github.com/vjcitn/BiocAgentSkills/reference
+  article: https://github.com/vjcitn/BiocAgentSkills/articles
