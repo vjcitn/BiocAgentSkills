@@ -175,10 +175,18 @@ ask_claude <- function(user_msg, system_msg = NULL, model = "haiku") {
   if (nchar(claude) == 0L) stop("claude CLI not found on PATH")
 
   args <- c("-p", "--model", model, "--tools", "")
-  if (!is.null(system_msg))
-    args <- c(args, "--system-prompt", system_msg)
 
-  # Pass the user message via stdin (the `input` argument to system2)
+  # Write system prompt to a tempfile and use --system-prompt-file.
+  # Passing markdown directly via --system-prompt causes shell interpretation
+  # of backticks and parentheses in the skill document text.
+  sys_file <- NULL
+  if (!is.null(system_msg)) {
+    sys_file <- tempfile(fileext = ".txt")
+    writeLines(system_msg, sys_file)
+    args <- c(args, "--system-prompt-file", sys_file)
+  }
+  on.exit(if (!is.null(sys_file)) unlink(sys_file), add = TRUE)
+
   out <- system2(claude, args = args,
                  input  = user_msg,
                  stdout = TRUE, stderr = FALSE)

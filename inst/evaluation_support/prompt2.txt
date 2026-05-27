@@ -1,0 +1,6 @@
+Using txdbmaker's makeTxDbFromGFF, load the bundled GFF3 example file
+(system.file("extdata", "GFF3_files", "a.gff3", package="txdbmaker"))
+and show me:
+1. Exons grouped by gene
+2. Transcripts grouped by gene
+3. CDS grouped by transcript

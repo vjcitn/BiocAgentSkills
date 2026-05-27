@@ -2,6 +2,7 @@
 title: "Evaluating Bioconductor Agent Skills"
 author:
   - name: Claude code
+  - name: Vince Carey
 package: BiocAgentSkills
 output:
   BiocStyle::html_document:
@@ -24,8 +25,9 @@ knitr::opts_chunk$set(
 
 The `BiocAgentSkills` package ships a collection of **how-to skill documents**
 that teach AI agents (Claude Code, GitHub Copilot, Gemini) Bioconductor
-conventions and multi-step workflows. A skill document is only as useful as the
-code it elicits: if a model ignores the document, uses a deprecated function, or
+conventions and multi-step workflows.  The value of a skill document depends on
+the code it elicits, which itself will depend on the user's prompt and
+the model in use.  If a model ignores the document, uses a deprecated function, or
 produces code that produces wrong answers, the skill has failed.
 
 This vignette describes the **evaluation framework** stored under
@@ -65,18 +67,14 @@ cdsBy(txdb, by = "tx")
 
 # Evaluation Architecture
 
-The eval folder contains three kinds of files:
+The `evaluation_support` folder contains three kinds of files:
 
 | File | Role |
 |------|------|
 | `ground_truth_bundled.R` | Hard-coded expected counts and coordinates for the txdbmaker bundled GFF3 |
-| `ground_truth_yeast.R` | Expected values for S. cerevisiae Ensembl r113 (7 036 genes) |
 | `check_txdb.R` | Shared correctness checker: runs a TxDb through a battery of assertions |
-| `run_eval_bundled.R` | Full evaluator for the bundled GFF3 (static + dynamic) |
-| `run_eval_yeast.R` | Full evaluator for the yeast GFF3 (static + dynamic) |
+| `simple_eval_bundled.R` | Full evaluator for the bundled GFF3 (static + dynamic) |
 | `prompts/bundled_prompts.md` | Prompt ladder (P1–P5) for the bundled scenario |
-| `prompts/yeast_prompts.md` | Prompt ladder (P1–P6) for the yeast scenario |
-| `judge_prompt.md` | Template for Claude-as-judge scoring |
 
 ## Two Test Scenarios
 
@@ -93,7 +91,7 @@ Ground truth (`BUNDLED_FACTS`):
 - Single seqlevel `SL2.40ch00`
 - 4 named genes with exact coordinate and exon-count checks
 
-### Yeast GFF3 (real organism, requires download)
+### Yeast GFF3 (real organism, requires download) [NOT AVAILABLE IN FIRST DRAFT OF BiocAgentSkills]
 
 The second scenario uses the *Saccharomyces cerevisiae* Ensembl release 113
 GFF3 (R64-1-1 assembly). The file is bundled in the package at
@@ -113,37 +111,7 @@ the organism name and taxonomy ID metadata arguments.
 
 # Running an Evaluation
 
-## Step 1 — Source the evaluator
-
-```{r source-eval, eval=FALSE}
-eval_dir <- system.file("eval1", "eval", package = "BiocAgentSkills")
-source(file.path(eval_dir, "run_eval_bundled.R"))
-```
-
-This sources `ground_truth_bundled.R` and `check_txdb.R` automatically.
-
-## Step 2 — Evaluate a code string
-
-Pass any R code string (e.g., output from an AI model) to `eval_code_string()`:
-
-```{r eval-string, eval=FALSE}
-generated_code <- '
-library(txdbmaker)
-gff <- system.file("extdata", "GFF3_files", "a.gff3", package = "txdbmaker")
-txdb <- makeTxDbFromGFF(gff, format = "gff3")
-exonsBy(txdb, by = "gene")
-transcriptsBy(txdb, by = "gene")
-cdsBy(txdb, by = "tx")
-'
-
-result <- eval_code_string(generated_code)
-```
-
-Or evaluate a saved file:
-
-```{r eval-file, eval=FALSE}
-result <- eval_code_file("path/to/generated_code.R")
-```
+See the README.md under `inst/evaluation_support`.
 
 The returned `result` list contains:
 

@@ -1,0 +1,120 @@
+---
+title: "Evaluating a skill: creating gene models from GFF3"
+author:
+  - name: Claude code
+  - name: Vince Carey
+package: BiocAgentSkills
+output:
+  BiocStyle::html_document:
+    toc: true
+    toc_float: true
+vignette: >
+  %\VignetteIndexEntry{Evaluating a skill: creating gene models from GFF3}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+
+# Overview
+
+This vignette walks through a skill evaluation workflow for the
+`load-gene-from-gff-gtf` skill using a limited GFF3 file that is shipped with txdbmaker.
+
+The workflow has three layers:
+
+1. **Prompt layer** — six prompts ranging from minimal to adversarial
+2. **Execution layer** — the `claude` CLI in non-interactive (`-p`) mode
+   generates code; `eval_code_string_yeast()` evaluates it
+3. **Assessment layer** — static (code-text) and dynamic (TxDb correctness)
+   checks are combined into a summary table
+
+## Resolve the bundled GFF3
+
+```{r gff-path}
+gff_path <- system.file("extdata", "GFF3_FILES", "a.gff3", package="txdbmaker")
+stopifnot(file.exists(gff_path))
+cat("GFF3:", gff_path, "\n")
+cat("Size:", round(file.size(gff_path) / 1e6, 1), "MB\n")
+```
+
+## Load the skill document
+
+```{r skill-doc}
+skill_path <- file.path(
+  system.file("demoskills", "genemodel.md", package = "BiocAgentSkills")
+)
+skill_doc <- paste(readLines(skill_path), collapse = "\n")
+cat(substr(skill_doc, 1, 250), "...\n")
+```
+
+## Generate code according to a prompt
+
+This code is not evaluated in the vignette, but
+should succeed if the environment variable ANTHROPIC_API_KEY
+is validly set.
+```
+syspr = readLines(system.file("demoskills", 
+    "genemodel.md", package="BiocAgentSkills")) |> paste(collapse="\n")
+
+library(ellmer)
+library(btw)
+
+k = Sys.getenv("ANTHROPIC_API_KEY")
+stopifnot(nchar(k)>0)
+
+ch = chat_anthropic(system_prompt = syspr)
+
+newprompt = readLines(system.file("evaluation_support", "prompt2.txt", package="BiocAgentSkills")) |> paste(collapse="\n")
+
+ch$chat(btw(), newprompt)
+```
+
+## Evaluate the generated code
+
+The following report is produced by using
+materials in inst/evaluation_support, according to the
+README.md there.
+
+```
+=== Exons grouped by gene ===
+
+=== Transcripts grouped by gene ===
+
+=== CDS grouped by transcript ===
+0/0 packages newly attached/loaded, see sessionInfo() for details.
+
+=== Static checks ===
+                  check status detail
+         uses txdbmaker   PASS       
+ avoids deprecated path   PASS       
+            format= arg   PASS       
+                exonsBy   PASS       
+          transcriptsBy   PASS       
+                  cdsBy   PASS       
+
+=== Correctness checks ===
+               check status                               detail
+             is TxDb   PASS                                     
+          gene count   PASS                   488 (expected 488)
+    transcript count   PASS                   488 (expected 488)
+          exon count   PASS                 1268 (expected 1268)
+          CDS groups   PASS                   488 (expected 488)
+           seqlevels   PASS 'SL2.40ch00' (expected 'SL2.40ch00')
+         gene1 start   PASS                                16437
+           gene1 end   PASS                                18189
+        gene1 strand   PASS                                    +
+    gene1 exon count   PASS                                    2
+   gene1 exon1 start   PASS                                16437
+     gene1 exon1 end   PASS                                17275
+   gene1 exon2 start   PASS                                17336
+     gene1 exon2 end   PASS                                18189
+      gene1 tx count   PASS                                    1
+       gene1 tx name   PASS                   Solyc00g005000.2.1
+  gene3ex exon count   PASS                       3 (expected 3)
+ gene3ex exon starts   PASS                    68062,68344,68654
+  gene4ex exon count   PASS                       4 (expected 4)
+  gene5ex exon count   PASS                       5 (expected 5)
+      gene5ex strand   PASS                                    -
+
+Overall: PASS  (27/27 checks passed)
+```

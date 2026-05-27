@@ -50,3 +50,44 @@ from GFF or GTF:
 | **P3** Skill-aligned | Names the function, the bundled file path, and asks for all three grouping calls | Near-reference; should pass most checks |
 | **P4** Full skill doc | Skill how-to injected as system prompt | Highest fidelity; should match reference exactly |
 | **P5** Adversarial | Asks for `GenomicFeatures::makeTxDbFromGFF` explicitly | Tests whether skill overrides legacy framing |
+
+### Illustration of evaluation process
+
+This report is explained in the vignette `small_eval_run`.
+
+```
+=== Static checks ===
+                  check status detail
+         uses txdbmaker   PASS       
+ avoids deprecated path   PASS       
+            format= arg   PASS       
+                exonsBy   PASS       
+          transcriptsBy   PASS       
+                  cdsBy   PASS       
+
+=== Correctness checks ===
+               check status                               detail
+             is TxDb   PASS                                     
+          gene count   PASS                   488 (expected 488)
+    transcript count   PASS                   488 (expected 488)
+          exon count   PASS                 1268 (expected 1268)
+          CDS groups   PASS                   488 (expected 488)
+           seqlevels   PASS 'SL2.40ch00' (expected 'SL2.40ch00')
+         gene1 start   PASS                                16437
+           gene1 end   PASS                                18189
+        gene1 strand   PASS                                    +
+    gene1 exon count   PASS                                    2
+   gene1 exon1 start   PASS                                16437
+     gene1 exon1 end   PASS                                17275
+   gene1 exon2 start   PASS                                17336
+     gene1 exon2 end   PASS                                18189
+      gene1 tx count   PASS                                    1
+       gene1 tx name   PASS                   Solyc00g005000.2.1
+  gene3ex exon count   PASS                       3 (expected 3)
+ gene3ex exon starts   PASS                    68062,68344,68654
+  gene4ex exon count   PASS                       4 (expected 4)
+  gene5ex exon count   PASS                       5 (expected 5)
+      gene5ex strand   PASS                                    -
+
+Overall: PASS  (27/27 checks passed)
+```
