@@ -18,7 +18,7 @@ Ultimately this package will not contain skill documents, but will provide
 verifiable references to relevant skills.  Principal examples include
 
 - [Waldronlab skills](https://github.com/waldronlab/ai-agent-skills)
-- Sean Davis' [Bioconductor task skills](https://github.com/Bioconductor/ai-agent-skills/blob/devel/skills/bioc-howto/SKILL.md)
+- [BiocHowTo skills](https://github.com/Bioconductor/ai-agent-skills/blob/devel/skills/bioc-howto/SKILL.md) translated from [BiocHowTo](https://github.com/Bioconductor/BiocHowTo) by Sean Davis
 
 In the initial development of this package, Claude was asked to create
 an evaluation framework for one of the Bioconductor task skills.  Thus there
